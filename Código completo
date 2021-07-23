@@ -1,0 +1,554 @@
+//+------------------------------------------------------------------+ 
+//|                                             Estocástico 1.0.4.mq5| 
+//|                           Copyright 2020, Pedro Vinicius da Silva| 
+//|                                                                  | 
+//+------------------------------------------------------------------+ 
+ 
+//+-------------------------------------------------------------------------------------------+ 
+//| Sessão de includes                                                                        | 
+//+-------------------------------------------------------------------------------------------+ 
+
+//+-------------------------------------------------------------------------------------------+ 
+//| Protótipos                                                                                | 
+//+-------------------------------------------------------------------------------------------+ 
+void sinaisDeEntrada();
+void compraEvenda();
+void lobby();
+void fechaPosicao();
+
+//+-------------------------------------------------------------------------------------------+ 
+//| Definição de variáveis                                                                    | 
+//+-------------------------------------------------------------------------------------------+    
+   //----- Objetos que fazem as operações;
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+
+   //----- Grupos de input;
+   input group "Tempo Gráfico"
+   input ENUM_TIMEFRAMES periodo = PERIOD_CURRENT; 
+
+   input group "TP e SL"
+   input int takeProfit = 3500;          
+   input int stopLoss   = 700;
+   
+   input group "Zonas de sobrecompra e sobrevenda"
+   input int sobreCompra      = 80;
+   input int sobreVenda       = 20;
+   input int gatilhoVenda     = 65;
+   input int gatilhoCompra    = 35;
+   
+   input group "Médias do estocástico"
+   input int Kperiod = 5;
+   input int Dperiod = 3;
+   input int Slowing = 3;
+   
+   //input group "Volume"
+   /*sinput*/ int Volume = 5;
+   
+   input group "Número mágico"
+   sinput int EXPERT_MAGIC = 2;
+   
+   input group "Tempo de aguardo"
+   input int waitingPeriod = 1000 * 60;//30 minutos
+     
+   //----- Strings;   
+   string infos[8] = {"Ativo", "Cotação", "Posição", "%K", "%D", "sinal", "Timer Compra", "Timer Venda"};
+   string posicao = "Nenhuma";  
+   string signal = " ";
+   
+   //----- Entrada boleanas;
+   bool rp = false, RompSC = false;  
+   //----- Sinais de entrada;
+   int sinalDeCompra = 0, sinalDeVenda = 0;
+   //----- Sinais de tempo;
+   int timerCompra         = waitingPeriod, timerVenda = waitingPeriod;
+   int inicializar         = 0;
+   int fechamentoCompra    = 0;
+   int fechamentoVenda     = 0;
+
+//+-------------------------------------------------------------------------------------------+ 
+//| Funcão OnInit                                                                             | 
+//+-------------------------------------------------------------------------------------------+   
+int OnInit()
+{
+   //----- Definindo o intervalo de ação do timer;
+   EventSetTimer(1);
+   
+   //----- Variáveis para controle de tamanho do display (pixels); 
+   int delta_x    = 10;
+   int delta_y    = 10;
+   int x_size     = 350;
+   int line_size  = 20;
+   int y_size     = 3*line_size*ArraySize(infos)+10;
+
+   //----- Definindo o objeto Background;
+   ObjectCreate(0,"Background", OBJ_RECTANGLE_LABEL, 0, 0, 0);
+
+   ObjectSetInteger(0, "Background", OBJPROP_CORNER, CORNER_LEFT_LOWER);
+   ObjectSetInteger(0, "Background", OBJPROP_XDISTANCE, delta_x);
+   ObjectSetInteger(0, "Background", OBJPROP_YDISTANCE, y_size + delta_y);
+   ObjectSetInteger(0, "Background", OBJPROP_XSIZE, x_size);
+   ObjectSetInteger(0, "Background", OBJPROP_YSIZE, y_size);
+   
+   ObjectSetInteger(0,"Background", OBJPROP_BGCOLOR, C'0x42,0x43,0x4A');
+   ObjectSetInteger(0,"Background", OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0,"Background", OBJPROP_BORDER_COLOR, clrLightSteelBlue); 
+      
+   //----- Exibindo os nomes das informações no display; 
+   for(int i = 0; i < ArraySize(infos); i++)
+   {
+      if(!ObjectCreate(0, infos[i], OBJ_LABEL, 0, 0, 0)) return(INIT_FAILED);
+      string name = infos[i] + "Valor";
+      if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0)) return(INIT_FAILED);
+      
+      //----- Definindo onde serão escritas as informações;
+      ObjectSetInteger(0, infos[i], OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+      ObjectSetInteger(0, infos[i], OBJPROP_CORNER, CORNER_LEFT_LOWER);
+      ObjectSetInteger(0, infos[i], OBJPROP_XDISTANCE, delta_x + 5);
+      ObjectSetInteger(0, infos[i], OBJPROP_YDISTANCE, delta_y - 18 + y_size - 2*i*line_size);
+      //----- Definindo a posição dos valores;
+      ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_LOWER);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, delta_x + 5);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, delta_y - 35 + y_size - 2*i*line_size);
+            
+      //----- Definindo propriedades do texto;
+      ObjectSetInteger(0, infos[i], OBJPROP_COLOR, clrSilver);
+      ObjectSetInteger(0, infos[i], OBJPROP_FONTSIZE, 10);
+
+      ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 12);
+
+      ObjectSetString(0, infos[i], OBJPROP_TEXT, infos[i]);
+
+      ObjectSetString(0, name, OBJPROP_TEXT, "-");     
+   }   
+   //----- Redesenhando o display; 
+   ChartRedraw();   
+   
+   return(INIT_SUCCEEDED);
+}
+//+-------------------------------------------------------------------------------------------+  
+//| Função OnDeinit                                                                           | 
+//+-------------------------------------------------------------------------------------------+  
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
+
+   ObjectDelete(0, "Background");
+   ObjectDelete(0, "Background2");
+   
+   for(int i = 0; i < ArraySize(infos); i++)
+   {
+      ObjectDelete(0, infos[i]);
+   } 
+   for(int i = 0; i < ArraySize(infos); i++)
+   {
+      ObjectDelete(0, infos[i]+ "Valor");
+   }
+}
+
+//+-------------------------------------------------------------------------------------------+ 
+//| Função OnTick - Função principal                                                          | 
+//+-------------------------------------------------------------------------------------------+  
+void OnTick()
+{  
+   //----- Sinal recebe vazio;
+   signal = " ";  
+   
+   //----- Atualizando valores no display; 
+   ObjectSetString(0, infos[0]+"Valor", OBJPROP_TEXT, _Symbol);
+   ObjectSetString(0, infos[1]+"Valor", OBJPROP_TEXT, DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_LAST),0));
+   ObjectSetString(0, infos[2]+"Valor", OBJPROP_TEXT, posicao);
+   ObjectSetString(0, infos[6]+"Valor", OBJPROP_TEXT, timerCompra/60);
+   ObjectSetString(0, infos[7]+"Valor", OBJPROP_TEXT, timerVenda/60);
+
+   //----- Objeto posição no display; 
+   ObjectSetInteger(0, infos[1]+"Valor", OBJPROP_COLOR, clrWhite);
+   if(PositionSelect(_Symbol))
+   {
+      if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+      {
+         posicao = "Comprado";
+         ObjectSetInteger(0,infos[2]+"Valor", OBJPROP_COLOR, clrDodgerBlue);
+      }
+      if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+      {
+         posicao = "Vendido";
+         ObjectSetInteger(0,infos[2]+"Valor", OBJPROP_COLOR, clrRed);
+      }
+   }
+   
+   //----- Objeto "sinal" no display;
+   //----- Mostra compra caso sinalDeCompra esteja ativo;
+   if(sinalDeCompra == 1)
+   {
+      ObjectSetString(0, infos[5]+"Valor", OBJPROP_TEXT, "Compra");
+      ObjectSetInteger(0, infos[5]+"Valor", OBJPROP_COLOR, clrBlue);
+   }
+   //----- Mostra venda caso sinalDeVenda esteja ativo;
+   if(sinalDeVenda == 1)
+   {
+      ObjectSetString(0, infos[5]+"Valor", OBJPROP_TEXT, "Venda");
+      ObjectSetInteger(0, infos[5]+"Valor", OBJPROP_COLOR, clrRed);
+   }
+   //----- Mostra neutro caso nenhum sinal esteja ativo;
+   if((sinalDeCompra == 0) && (sinalDeVenda == 0))
+   {
+      ObjectSetString(0, infos[5]+"Valor", OBJPROP_TEXT, "Neutro");
+      ObjectSetInteger(0, infos[5]+"Valor", OBJPROP_COLOR, clrGray);
+   }
+   
+   
+//+-------------------------------------------------------------------------------------------+ 
+//| Definição de variáveis do estocástico                                                     | 
+//+-------------------------------------------------------------------------------------------+   
+   //----- Preço de compra e venda;
+   double Ask = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_ASK), _Digits);  
+   double Bid = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits);
+   
+   //----- Vetores das bandas;
+   double K[];
+   double D[];
+   
+   //----- Organiza o vetor a partir do candle atual pra trás;
+   ArraySetAsSeries(K, true);
+   ArraySetAsSeries(D, true);
+   
+   //----- Definição do ExpertAdvisor, Candle atual, 3 candles, salva resultado;
+   int StochasticDefinition = iStochastic(_Symbol, _Period, Kperiod, Dperiod, Slowing, MODE_SMA, STO_LOWHIGH);
+   
+   //----- Preenchendo os arrays;
+   CopyBuffer(StochasticDefinition, 0, 0, 3, K);
+   CopyBuffer(StochasticDefinition, 1, 0, 3, D);
+   
+   //----- Calculando valor para candle atual;
+   double Kvalue0 = K[0];
+   double Dvalue0 = D[0];
+   
+   //----- Atualizando %K e %D no display;
+   ObjectSetString(0, infos[3]+"Valor", OBJPROP_TEXT, DoubleToString(NormalizeDouble(Kvalue0, 0), 2));
+   ObjectSetString(0, infos[4]+"Valor", OBJPROP_TEXT, DoubleToString(NormalizeDouble(Dvalue0, 0), 2));
+   
+   //----- Calculando valor para candle anterior;
+   double Kvalue1 = K[1];
+   double Dvalue1 = D[1];
+   
+   //----- Switch para ligar e desligar RP`s;
+   if(PositionsTotal() < 1)
+   if(rp == true)
+   {
+      rp = false;
+   }
+   
+   //----- Sessao de  comentarios;
+   Comment ("Kvalue0 ", Kvalue0);  
+   
+   //----- Chamada de funções externas;
+   lobby(Kvalue0, Bid, Ask);         
+}
+
+
+//+-------------------------------------------------------------------------------------------+ 
+//| Função Sinais de entrada                                                                  | 
+//+-------------------------------------------------------------------------------------------+ 
+void sinaisDeEntrada(double Kvalue0)
+{
+   //-----  Sinal de compra;  
+   if(Kvalue0 < sobreVenda)
+   {
+      sinalDeCompra     = 1;
+   } 
+   
+   //-----  Se houver rompimento antes do timer;
+   if(Kvalue0 > sobreVenda)
+   if(sinalDeCompra == 1)
+   if(timerCompra < waitingPeriod)
+   {
+      sinalDeCompra  = 0;
+      if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+      {
+         fechamentoVenda   = 1;
+      }
+   }
+   
+   //-----  Condição para fechar posição na compra sem inverter a mão;
+   if(Kvalue0 > gatilhoCompra)
+   if(fechamentoVenda == 1)
+   {
+      fechaPosicao();
+      fechamentoVenda = 0;
+   }
+   
+   //-----  Se todos os sinais alinharem para compra;
+   if(Kvalue0 > gatilhoCompra)
+   if(sinalDeCompra == 1)
+   if(timerCompra >= waitingPeriod)
+   {
+      
+      signal            = "buy";
+      sinalDeCompra     = 0;  
+   } 
+
+    
+      
+   //-----  Sinal de venda;        
+   if(Kvalue0 > sobreCompra)
+   {
+     sinalDeVenda       = 1; 
+   }
+   
+   //-----  Se houver rompimento antes do timer;
+   if(Kvalue0 < sobreCompra)
+   if(sinalDeVenda == 1)
+   if(timerVenda < waitingPeriod)
+   {
+      sinalDeVenda      = 0;
+      if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+      {
+         fechamentoCompra  = 1;
+      }
+   }
+   
+   //-----  Condição para fechar posição na venda sem inverter a mão;
+   if(Kvalue0 < gatilhoVenda)
+   if(fechamentoCompra == 1)
+   {
+      fechaPosicao();
+      fechamentoCompra = 0;
+   }
+   
+   //-----  Se todos os sinais alinharem para venda;
+   if(Kvalue0 < gatilhoVenda)
+   if(sinalDeVenda == 1)
+   if(timerVenda >= waitingPeriod)
+   {
+      signal            = "sell";
+      sinalDeVenda      = 0;
+   }
+   
+}
+
+//+-------------------------------------------------------------------------------------------+ 
+//| Funções de compra e venda                                                                 | 
+//+-------------------------------------------------------------------------------------------+ 
+void compra(int Vol, double Ask, double Bid)
+{
+   ZeroMemory(request);
+   //ZeroMemory(result)    
+   request.action        = TRADE_ACTION_DEAL;
+   request.type          = ORDER_TYPE_BUY;
+   request.sl            = Bid - stopLoss;
+   request.tp            = Ask + takeProfit;
+   request.deviation     = 100;
+   request.symbol        = _Symbol;
+   request.volume        = 5; //Volume/Vol;
+   request.price         = SymbolInfoDouble(Symbol(),SYMBOL_ASK);
+   request.type_filling  = ORDER_FILLING_FOK;
+   request.magic         = EXPERT_MAGIC;
+   
+   if(OrderSend(request,result))
+   {
+      ObjectCreate(0, "SetaVende", OBJ_ARROW_BUY, 0, TimeCurrent(),0);
+   }  
+   else
+   {
+      PrintFormat("Order send error");
+   }
+}
+
+void venda(int Vol, double Ask, double Bid)
+{
+   //-----Venda
+   ZeroMemory(request);
+   //ZeroMemory(result)    
+   request.action        = TRADE_ACTION_DEAL;
+   request.type          = ORDER_TYPE_SELL;
+   request.sl            = Ask + stopLoss;
+   request.tp            = Bid - takeProfit;
+   request.deviation     = 100;
+   request.symbol        = _Symbol;
+   request.volume        = 5; //Volume/Vol;
+   request.price         = SymbolInfoDouble(Symbol(),SYMBOL_BID);
+   request.type_filling  = ORDER_FILLING_FOK;
+   request.magic         = EXPERT_MAGIC;
+
+   if(OrderSend(request,result))
+   {
+      ObjectCreate(0, "SetaCompra", OBJ_ARROW_SELL, 0, TimeCurrent(),0);
+      sinalDeVenda = 0;
+   }
+   else
+   {
+      PrintFormat("Order send error");
+   } 
+}
+
+//+-------------------------------------------------------------------------------------------+ 
+//| Função OnTimer                                                                            | 
+//+-------------------------------------------------------------------------------------------+  
+void OnTimer()
+{
+   inicializar = inicializar + 1;
+   if(sinalDeCompra == 1)
+   {
+      timerCompra = timerCompra + 1;
+   }else{timerCompra = 0;}
+   
+   
+   if(sinalDeVenda == 1)
+   {
+      timerVenda = timerVenda + 1;
+   }else{timerVenda = 0;}
+     
+}
+
+
+//+-------------------------------------------------------------------------------------------+ 
+//| Função lobby                                                                              | 
+//+-------------------------------------------------------------------------------------------+  
+void lobby(double Kvalue0, double Bid, double Ask)
+{
+   //------ Limpa o sinal global de entrada;
+   signal = " ";
+   
+   //------ Chama a função sinal de entrada;
+   //------ Esta função altera a variável global "signal" para "buy" ou "sell";
+   sinaisDeEntrada(Kvalue0);
+   
+   //------ Aguardando para inicializar;
+   if(inicializar > 30000)
+   {
+      if(PositionsTotal() >= 1)
+      {
+         //------ Se ja houver uma posicao aberta;
+         //------ Fecha a atual e inverte a mao;
+         if(signal == "sell")
+         {
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+            {
+               //----- Fecha a posicao;
+               fechaPosicao();
+               //----- Entra no sentido da operacao;
+               venda (1, Ask, Bid);
+            }
+         }
+         
+         if(signal == "buy")
+         {
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+            {
+               //----- Fecha a posicao;
+               fechaPosicao();
+               //----- Entra no sentido da operacao;
+               compra (1, Ask, Bid);
+            }
+         }
+      }
+      
+      //----- Se nao houver posicao aberta;
+      if(PositionsTotal() < 1)
+      {
+         if(signal == "buy")
+         {
+            compra(Volume, Ask, Bid);
+         }
+         if(signal == "sell")
+         {
+            venda(Volume, Ask, Bid);
+         }
+      }    
+      
+   } 
+   
+   
+   /*
+   //----- Operações de RP
+   //----- COMPRADO
+   if(PositionsTotal()>0)
+   if(rp==false)
+   {
+      if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
+      {
+         if(signal == "sell")
+         {
+            venda(2, Ask, Bid);
+            rp=true;
+         }
+      }
+   }
+   
+   //----- VENDIDO
+   if(PositionsTotal()!=0)
+   if(rp==false)
+   {
+      if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_SELL)
+      {
+         if(signal == "buy")
+         {
+            compra(2, Ask, Bid);
+            rp=true;
+         }
+      }
+   }*/
+
+}
+
+void fechaPosicao()
+{
+
+   int total = PositionsTotal();
+   
+   for(int i = total - 1; i >= 0; i--)
+   {
+      //----- Parametros da ordem;
+      ulong    position_ticket   = PositionGetTicket(i);
+      string   position_symbol   = PositionGetString(POSITION_SYMBOL);
+      int      digits            = (int)SymbolInfoInteger(position_symbol, SYMBOL_DIGITS);
+      ulong    magic             = PositionGetInteger(POSITION_MAGIC);                                   // MagicNumber da posição
+      double   volume            = PositionGetDouble(POSITION_VOLUME);                                   // volume da posição
+      ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);                   // tipo de posição
+      //--- saída de informação sobre a posição
+      PrintFormat("#%I64u %s  %s  %.2f  %s [%I64d]",
+                  position_ticket,
+                  position_symbol,
+                  EnumToString(type),
+                  volume,
+                  DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN),digits),
+                  magic);
+      //--- se o MagicNumber coincidir
+      if(magic == EXPERT_MAGIC)
+        {
+         //--- zerar os valores do pedido e os seus resultados
+         ZeroMemory(request);
+         ZeroMemory(result);
+         //--- configuração dos parâmetros da ordem
+         request.action    = TRADE_ACTION_DEAL;        // tipo de operação de negociação
+         request.position  = position_ticket;          // bilhete da posição
+         request.symbol    = position_symbol;          // símbolo 
+         request.volume    = volume;                   // volume da posição
+         request.deviation = 5;                        // desvio permitido do preço
+         request.magic     = EXPERT_MAGIC;             // MagicNumber da posição
+         //--- colocação do preço e tipo de ordem dependendo do tipo de ordem
+         if(type == POSITION_TYPE_BUY)
+           {
+            request.price = SymbolInfoDouble(position_symbol, SYMBOL_BID);
+            request.type  = ORDER_TYPE_SELL;
+           }
+         else
+           {
+            request.price = SymbolInfoDouble(position_symbol, SYMBOL_ASK);
+            request.type  = ORDER_TYPE_BUY;
+           }
+         //--- saída de informação sobre o fechamento
+         PrintFormat("Close #%I64d %s %s",position_ticket,position_symbol,EnumToString(type));
+         //--- envio do pedido
+         if(!OrderSend(request,result))
+            PrintFormat("OrderSend error %d",GetLastError());  // se não for possível enviar o pedido, exibir um código de erro
+         //--- informação sobre a operação 
+         PrintFormat("retcode=%u  deal=%I64u  order=%I64u", result.retcode, result.deal, result.order);
+         //---
+        }
+     }
+
+}
